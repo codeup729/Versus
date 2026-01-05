@@ -52,6 +52,7 @@ struct OTPVerificationView: View {
             VStack(spacing: 0) {
                 // Header with back button
                 headerSection
+                    .padding(.top, 12)
                 
                 Spacer()
                     .frame(height: 60)
@@ -79,6 +80,7 @@ struct OTPVerificationView: View {
                 Spacer()
                     .frame(height: 50)
             }
+            .safeAreaPadding(.top)
             
             // Hidden input field for keyboard
             TextField("", text: $hiddenInput)
@@ -122,7 +124,6 @@ struct OTPVerificationView: View {
             Spacer()
         }
         .padding(.horizontal, 24)
-        .padding(.top, 20)
     }
     
     // MARK: - Title Section
