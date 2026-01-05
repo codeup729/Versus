@@ -8,14 +8,24 @@
 import SwiftUI
 
 struct ContentView: View {
+    // MARK: - Properties
+    
+    @State private var showSplash = true
+    
+    // MARK: - Body
+    
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        ZStack {
+            if showSplash {
+                SplashScreenView {
+                    showSplash = false
+                }
+                .transition(.opacity)
+            } else {
+                HomeView()
+                    .transition(.opacity)
+            }
         }
-        .padding()
     }
 }
 
