@@ -116,7 +116,7 @@ struct TennisBallRealityView: UIViewRepresentable {
         // Tennis ball seams form a curved line pattern
         
         // Seam material (white)
-        var seamMaterial = UnlitMaterial(color: .white)
+        let seamMaterial = UnlitMaterial(color: .white)
         
         // Create first seam curve
         let seam1 = createSeamCurve(angle: 0)
@@ -155,7 +155,7 @@ struct TennisBallRealityView: UIViewRepresentable {
         }
         
         // Create mesh from vertices using boxes to form the seam line
-        var seamEntity = ModelEntity()
+        let seamEntity = ModelEntity()
         
         // Create small boxes along the curve
         for i in 0..<vertices.count - 1 {
@@ -167,7 +167,7 @@ struct TennisBallRealityView: UIViewRepresentable {
             
             // Orient towards next vertex
             if i < vertices.count - 1 {
-                let direction = normalize(vertices[i + 1] - vertices[i])
+                var direction = normalize(vertices[i + 1] - vertices[i])
                 boxEntity.look(at: vertices[i + 1], from: vertices[i], relativeTo: seamEntity)
             }
             
