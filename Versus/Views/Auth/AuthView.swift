@@ -8,15 +8,14 @@
 import SwiftUI
 
 struct AuthView: View {
-    // MARK: - Properties
-    
+    @StateObject private var viewModel: AuthViewModel
     @Namespace private var animation
-    @State private var isLoginMode: Bool = true
-    @State private var phoneNumber: String = ""
-    @State private var countryCode: String = "+1"
-    @State private var showOTPScreen: Bool = false
+    @State private var showOTPScreen = false
     @State private var logoRotation: Double = 0
     @FocusState private var isPhoneFocused: Bool
+    @FocusState private var isPasswordFocused: Bool
+    
+    var onAuthenticated: (() -> Void)?
     
     // MARK: - Colors
     
@@ -29,6 +28,23 @@ struct AuthView: View {
     
     // MARK: - Body
     
+    @MainActor
+    init(
+        viewModel: AuthViewModel? = nil,
+        onAuthenticated: (() -> Void)? = nil
+    ) {
+        let resolvedViewModel = viewModel ?? AuthViewModel(
+            authService: AuthService(
+                providers: [
+                    PasswordAuthProvider()
+                ]
+            )
+        )
+        
+        _viewModel = StateObject(wrappedValue: resolvedViewModel)
+        self.onAuthenticated = onAuthenticated
+    }
+    
     var body: some View {
         ZStack {
             // Background gradient
@@ -39,23 +55,30 @@ struct AuthView: View {
             )
             .ignoresSafeArea()
             
-            if showOTPScreen {
+            if showOTPScreen, let challenge = viewModel.activeChallenge {
                 OTPVerificationView(
-                    phoneNumber: phoneNumber,
-                    countryCode: countryCode,
+                    challenge: challenge,
                     onBack: {
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                            showOTPScreen = false
+                            viewModel.dismissOTP()
                         }
                     },
-                    onVerified: {
-                        // Navigate to Hero page
-                    }
+                    onVerifyCode: { code in
+                        try await viewModel.verifyOTP(code: code)
+                    },
+                    onResendCode: {
+                        try await viewModel.resendOTP()
+                    },
+                    onVerified: {}
                 )
+                .id(challenge.id)
                 .transition(.asymmetric(
                     insertion: .move(edge: .trailing).combined(with: .opacity),
                     removal: .move(edge: .trailing).combined(with: .opacity)
                 ))
+            } else if viewModel.isAuthenticated {
+                authenticatedContent
+                    .transition(.opacity)
             } else {
                 mainAuthContent
                     .transition(.opacity)
@@ -63,6 +86,15 @@ struct AuthView: View {
         }
         .onAppear {
             startIdleAnimations()
+        }
+        .onChange(of: viewModel.activeChallenge?.id) { _, challengeID in
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                showOTPScreen = challengeID != nil
+            }
+        }
+        .onChange(of: viewModel.isAuthenticated) { _, isAuthenticated in
+            guard isAuthenticated else { return }
+            onAuthenticated?()
         }
     }
     
@@ -93,11 +125,28 @@ struct AuthView: View {
             
             // Phone Input
             PhoneInputView(
-                phoneNumber: $phoneNumber,
-                countryCode: $countryCode,
+                phoneNumber: $viewModel.phoneNumber,
+                countryCode: $viewModel.countryCode,
                 isPhoneFocused: $isPhoneFocused
             )
             .padding(.horizontal, 24)
+            
+            Spacer()
+                .frame(height: 14)
+            
+            PasswordInputView(
+                password: $viewModel.password,
+                isPasswordFocused: $isPasswordFocused
+            )
+            .padding(.horizontal, 24)
+            
+            if let error = viewModel.errorMessage {
+                Text(error)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(Color(red: 1.0, green: 0.45, blue: 0.45))
+                    .padding(.horizontal, 24)
+                    .padding(.top, 12)
+            }
             
             Spacer()
                 .frame(height: 24)
@@ -161,16 +210,16 @@ struct AuthView: View {
     private var toggleSection: some View {
         HStack(spacing: 0) {
             // Log In Tab
-            toggleTab(title: "Log In", isSelected: isLoginMode) {
+            toggleTab(title: "Log In", isSelected: viewModel.isLoginMode) {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
-                    isLoginMode = true
+                    viewModel.setLoginMode(true)
                 }
             }
             
             // Sign Up Tab
-            toggleTab(title: "Sign Up", isSelected: !isLoginMode) {
+            toggleTab(title: "Sign Up", isSelected: !viewModel.isLoginMode) {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
-                    isLoginMode = false
+                    viewModel.setLoginMode(false)
                 }
             }
         }
@@ -215,55 +264,104 @@ struct AuthView: View {
     
     private var welcomeTextSection: some View {
         VStack(spacing: 8) {
-            Text(isLoginMode ? "Welcome back" : "Create account")
+            Text(viewModel.isLoginMode ? "Welcome back" : "Create account")
                 .font(.system(size: 26, weight: .bold))
                 .foregroundColor(.white)
-                .id("title_\(isLoginMode)")
+                .id("title_\(viewModel.isLoginMode)")
                 .transition(.asymmetric(
                     insertion: .scale(scale: 0.8).combined(with: .opacity),
                     removal: .scale(scale: 1.1).combined(with: .opacity)
                 ))
             
-            Text(isLoginMode ? "Enter your phone to continue" : "Enter your phone to get started")
+            Text(viewModel.isLoginMode ? "Enter phone + password to continue" : "Create credentials, then verify your OTP")
                 .font(.system(size: 15, weight: .medium))
                 .foregroundColor(textMuted)
-                .id("subtitle_\(isLoginMode)")
+                .id("subtitle_\(viewModel.isLoginMode)")
                 .transition(.opacity)
         }
-        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: isLoginMode)
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.isLoginMode)
     }
     
     // MARK: - Continue Button
     
     private var continueButton: some View {
         Button(action: {
-            if !phoneNumber.isEmpty {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                    showOTPScreen = true
-                }
+            isPhoneFocused = false
+            isPasswordFocused = false
+            viewModel.clearError()
+            Task {
+                await viewModel.submit()
             }
         }) {
-            Text("Continue")
-                .font(.system(size: 17, weight: .bold))
-                .foregroundColor(backgroundDark)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 18)
-                .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(phoneNumber.isEmpty ? accentGreen.opacity(0.4) : accentGreen)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                )
+            HStack(spacing: 10) {
+                if viewModel.isLoading {
+                    ProgressView()
+                        .tint(backgroundDark)
+                }
+                
+                Text(viewModel.isLoading ? "Please wait..." : "Continue")
+                    .font(.system(size: 17, weight: .bold))
+            }
+            .foregroundColor(backgroundDark)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 18)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(viewModel.canContinue ? accentGreen : accentGreen.opacity(0.4))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.white.opacity(0.1), lineWidth: 1)
+            )
         }
-        .buttonStyle(ContinueButton3DStyle(isEnabled: !phoneNumber.isEmpty))
-        .disabled(phoneNumber.isEmpty)
+        .buttonStyle(ContinueButton3DStyle(isEnabled: viewModel.canContinue))
+        .disabled(!viewModel.canContinue)
         .padding(.horizontal, 24)
         // Multi-layer shadows
-        .shadow(color: accentGreen.opacity(phoneNumber.isEmpty ? 0 : 0.3), radius: 0, y: 3)
+        .shadow(color: accentGreen.opacity(viewModel.canContinue ? 0.3 : 0), radius: 0, y: 3)
         .shadow(color: Color.black.opacity(0.4), radius: 12, y: 6)
         .shadow(color: Color.black.opacity(0.2), radius: 24, y: 12)
+    }
+    
+    // MARK: - Authenticated Content
+    
+    private var authenticatedContent: some View {
+        VStack(spacing: 24) {
+            Spacer()
+            
+            Image(systemName: "checkmark.shield.fill")
+                .font(.system(size: 64, weight: .semibold))
+                .foregroundColor(accentGreen)
+                .shadow(color: accentGreen.opacity(0.35), radius: 22, y: 8)
+            
+            Text("You're signed in")
+                .font(.system(size: 30, weight: .bold))
+                .foregroundColor(.white)
+            
+            Text(viewModel.authenticatedSession?.phoneNumber ?? "")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(textMuted)
+            
+            Text("Home flow can be connected here next.")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundColor(textMuted)
+            
+            Button("Sign Out") {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    viewModel.signOut()
+                }
+            }
+            .font(.system(size: 16, weight: .bold))
+            .foregroundColor(backgroundDark)
+            .padding(.horizontal, 28)
+            .padding(.vertical, 14)
+            .background(accentGreen)
+            .cornerRadius(14)
+            .buttonStyle(.plain)
+            
+            Spacer()
+        }
+        .padding(.horizontal, 24)
     }
     
     // MARK: - Terms Text

@@ -8,10 +8,8 @@
 import SwiftUI
 
 struct OTPVerificationView: View {
-    // MARK: - Properties
-    
-    let phoneNumber: String
-    let countryCode: String
+    let onVerifyCode: (String) async throws -> Void
+    let onResendCode: () async throws -> OTPChallenge
     var onBack: () -> Void
     var onVerified: () -> Void
     
@@ -21,12 +19,13 @@ struct OTPVerificationView: View {
     @State private var isVerified: Bool = false
     @State private var resendTimer: Int = 30
     @State private var canResend: Bool = false
+    @State private var isVerifying: Bool = false
+    @State private var errorMessage: String?
+    @State private var resendTask: Task<Void, Never>?
     @FocusState private var isInputFocused: Bool
     
-    // Hidden text field for keyboard
     @State private var hiddenInput: String = ""
-    
-    // MARK: - Colors
+    @State private var currentChallenge: OTPChallenge
     
     private let backgroundDark = Color(red: 0.02, green: 0.05, blue: 0.02)
     private let backgroundLight = Color(red: 0.04, green: 0.12, blue: 0.04)
@@ -34,11 +33,22 @@ struct OTPVerificationView: View {
     private let cellBackground = Color(red: 0.06, green: 0.14, blue: 0.06)
     private let textMuted = Color(red: 0.4, green: 0.5, blue: 0.4)
     
-    // MARK: - Body
+    init(
+        challenge: OTPChallenge,
+        onBack: @escaping () -> Void,
+        onVerifyCode: @escaping (String) async throws -> Void,
+        onResendCode: @escaping () async throws -> OTPChallenge,
+        onVerified: @escaping () -> Void
+    ) {
+        self.onBack = onBack
+        self.onVerifyCode = onVerifyCode
+        self.onResendCode = onResendCode
+        self.onVerified = onVerified
+        _currentChallenge = State(initialValue: challenge)
+    }
     
     var body: some View {
         ZStack {
-            // Background gradient
             LinearGradient(
                 colors: [backgroundLight, backgroundDark],
                 startPoint: .top,
@@ -50,31 +60,33 @@ struct OTPVerificationView: View {
             }
             
             VStack(spacing: 0) {
-                // Header with back button
                 headerSection
                     .padding(.top, 12)
                 
                 Spacer()
                     .frame(height: 60)
                 
-                // Title
                 titleSection
                 
                 Spacer()
                     .frame(height: 40)
                 
-                // OTP Cells
                 otpCellsSection
                 
                 Spacer()
-                    .frame(height: 32)
+                    .frame(height: 24)
                 
-                // Resend Section
                 resendSection
+                
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(Color(red: 1.0, green: 0.45, blue: 0.45))
+                        .padding(.top, 14)
+                }
                 
                 Spacer()
                 
-                // Verify Button
                 verifyButton
                 
                 Spacer()
@@ -82,7 +94,6 @@ struct OTPVerificationView: View {
             }
             .safeAreaPadding(.top)
             
-            // Hidden input field for keyboard
             TextField("", text: $hiddenInput)
                 .keyboardType(.numberPad)
                 .focused($isInputFocused)
@@ -95,9 +106,10 @@ struct OTPVerificationView: View {
             isInputFocused = true
             startResendTimer()
         }
+        .onDisappear {
+            resendTask?.cancel()
+        }
     }
-    
-    // MARK: - Header Section
     
     private var headerSection: some View {
         HStack {
@@ -126,23 +138,25 @@ struct OTPVerificationView: View {
         .padding(.horizontal, 24)
     }
     
-    // MARK: - Title Section
-    
     private var titleSection: some View {
         VStack(spacing: 12) {
             Text("Enter the code")
                 .font(.system(size: 28, weight: .bold))
                 .foregroundColor(.white)
             
-            Text("We sent a code to \(countryCode) \(phoneNumber)")
+            Text("We sent a code to \(currentChallenge.destination)")
                 .font(.system(size: 15, weight: .medium))
                 .foregroundColor(textMuted)
                 .multilineTextAlignment(.center)
+            
+            if let demoCode = currentChallenge.debugCode {
+                Text("Demo code: \(demoCode)")
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .foregroundColor(accentGreen.opacity(0.9))
+            }
         }
         .padding(.horizontal, 24)
     }
-    
-    // MARK: - OTP Cells Section
     
     private var otpCellsSection: some View {
         HStack(spacing: 12) {
@@ -162,8 +176,6 @@ struct OTPVerificationView: View {
         .modifier(ShakeEffect(animatableData: isShaking ? 1 : 0))
     }
     
-    // MARK: - Resend Section
-    
     private var resendSection: some View {
         Group {
             if canResend {
@@ -180,8 +192,6 @@ struct OTPVerificationView: View {
         }
     }
     
-    // MARK: - Verify Button
-    
     private var verifyButton: some View {
         let isFilled = otpCode.allSatisfy { !$0.isEmpty }
         
@@ -191,9 +201,12 @@ struct OTPVerificationView: View {
                     Image(systemName: "checkmark")
                         .font(.system(size: 18, weight: .bold))
                         .transition(.scale.combined(with: .opacity))
+                } else if isVerifying {
+                    ProgressView()
+                        .tint(backgroundDark)
                 }
                 
-                Text(isVerified ? "Verified!" : "Verify")
+                Text(isVerified ? "Verified!" : (isVerifying ? "Verifying..." : "Verify"))
                     .font(.system(size: 17, weight: .bold))
             }
             .foregroundColor(backgroundDark)
@@ -209,15 +222,13 @@ struct OTPVerificationView: View {
             )
         }
         .buttonStyle(ContinueButton3DStyle(isEnabled: isFilled))
-        .disabled(!isFilled && !isVerified)
+        .disabled((!isFilled && !isVerified) || isVerifying)
         .padding(.horizontal, 24)
         .shadow(color: accentGreen.opacity(isFilled ? 0.3 : 0), radius: 0, y: 3)
         .shadow(color: Color.black.opacity(0.4), radius: 12, y: 6)
         .shadow(color: Color.black.opacity(0.2), radius: 24, y: 12)
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isVerified)
     }
-    
-    // MARK: - Methods
     
     private func handleInput(_ newValue: String) {
         let digits = newValue.filter { $0.isNumber }
@@ -233,11 +244,9 @@ struct OTPVerificationView: View {
             }
         }
         
-        // Update focused index
         focusedIndex = min(limited.count, 5)
         
-        // Auto verify when all filled
-        if limited.count == 6 {
+        if limited.count == 6 && !isVerifying && !isVerified {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 verifyCode()
             }
@@ -245,45 +254,92 @@ struct OTPVerificationView: View {
     }
     
     private func verifyCode() {
-        // Simulate verification (always succeed for demo)
         let code = otpCode.joined()
+        guard !isVerifying else { return }
         
-        if code.count == 6 {
-            // Success animation
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
-                isVerified = true
+        guard code.count == 6 else {
+            triggerShake()
+            return
+        }
+        
+        isVerifying = true
+        errorMessage = nil
+        
+        Task { @MainActor in
+            do {
+                try await onVerifyCode(code)
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                    isVerified = true
+                }
+                isInputFocused = false
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    onVerified()
+                }
+            } catch {
+                clearCodeInput()
+                triggerShake()
+                errorMessage = mapError(error)
             }
-            
-            // Navigate after delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                onVerified()
-            }
-        } else {
-            // Shake on error
-            withAnimation(.default) {
-                isShaking = true
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                isShaking = false
-            }
+            isVerifying = false
         }
     }
     
     private func resendCode() {
+        guard canResend else { return }
+        
         canResend = false
         resendTimer = 30
+        errorMessage = nil
         startResendTimer()
+        
+        Task { @MainActor in
+            do {
+                currentChallenge = try await onResendCode()
+                clearCodeInput()
+                isInputFocused = true
+            } catch {
+                errorMessage = mapError(error)
+            }
+        }
     }
     
     private func startResendTimer() {
-        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
-            if resendTimer > 0 {
+        resendTask?.cancel()
+        resendTask = Task { @MainActor in
+            while resendTimer > 0 && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { return }
                 resendTimer -= 1
-            } else {
-                canResend = true
-                timer.invalidate()
             }
+            
+            canResend = true
         }
+    }
+    
+    private func clearCodeInput() {
+        hiddenInput = ""
+        otpCode = Array(repeating: "", count: 6)
+        focusedIndex = 0
+    }
+    
+    private func triggerShake() {
+        withAnimation(.default) {
+            isShaking = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            isShaking = false
+        }
+    }
+    
+    private func mapError(_ error: Error) -> String {
+        if let authError = error as? AuthError {
+            return authError.errorDescription ?? "Unable to verify code."
+        }
+        if let localizedError = error as? LocalizedError {
+            return localizedError.errorDescription ?? "Unable to verify code."
+        }
+        return "Unable to verify code."
     }
 }
 
@@ -359,10 +415,26 @@ struct ShakeEffect: GeometryEffect {
 
 #Preview {
     OTPVerificationView(
-        phoneNumber: "(555) 123-4567",
-        countryCode: "+1",
+        challenge: OTPChallenge(
+            id: UUID().uuidString,
+            destination: "+1 (555) 123-4567",
+            expiresAt: Date().addingTimeInterval(300),
+            debugCode: "123456"
+        ),
         onBack: {},
+        onVerifyCode: { code in
+            if code != "123456" {
+                throw AuthError.invalidOTP
+            }
+        },
+        onResendCode: {
+            OTPChallenge(
+                id: UUID().uuidString,
+                destination: "+1 (555) 123-4567",
+                expiresAt: Date().addingTimeInterval(300),
+                debugCode: "654321"
+            )
+        },
         onVerified: {}
     )
 }
-
